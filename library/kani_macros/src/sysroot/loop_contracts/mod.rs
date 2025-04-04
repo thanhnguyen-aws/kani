@@ -10,6 +10,8 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::token::AndAnd;
 use syn::{BinOp, Expr, ExprBinary, Stmt};
+use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
+use crate::contracts::helpers::{chunks_by, is_token_stream_2_comma, matches_path};
 
 /// Expand loop contracts macros.
 ///
@@ -98,4 +100,40 @@ fn generate_unique_id_from_span(stmt: &Stmt) -> String {
 
     // Create a tuple of location information (file path, start line, start column, end line, end column)
     format!("_{:?}_{:?}_{:?}_{:?}", start.line(), start.column(), end.line(), end.column())
+}
+
+
+pub fn loop_assign(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = chunks_by(TokenStream2::from(attr), is_token_stream_2_comma)
+        .map(syn::parse2)
+        .filter_map(|expr| match expr {
+            Err(e) => {
+                None
+            }
+            Ok(expr) => Some(expr),
+        })
+        .collect();
+    let wrapper_arg_ident = Ident::new(WRAPPER_ARG, Span::call_site());
+    let wrapper_tuple = body_stmts.iter_mut().find_map(|stmt| {
+        if let Stmt::Local(Local {
+            pat: Pat::Ident(PatIdent { ident, .. }),
+            init: Some(LocalInit { expr, .. }),
+            ..
+        }) = stmt
+        {
+            (ident == &wrapper_arg_ident).then_some(expr.as_mut())
+        } else {
+            None
+        }
+    });
+    if let Some(Expr::Tuple(values)) = wrapper_tuple {
+        values.elems.extend(attr.iter().map(|attr| {
+            let expr: Expr = parse_quote!(#attr
+            as *const _);
+            expr
+        }));
+    } else {
+        unreachable!("Expected tuple but found `{wrapper_tuple:?}`")
+    }
+    quote!({#(#body_stmts)*})        
 }
