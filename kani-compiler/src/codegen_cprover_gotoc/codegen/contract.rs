@@ -240,4 +240,18 @@ impl GotocCtx<'_> {
         self.symbol_table.attach_contract(&mangled_name, goto_contract);
         self.reset_current_fn();
     }
+
+    pub fn assign_closure_to_Lamda(&mut self, instance: Instance) -> Vec<Lambda> {
+        // This should be safe, since the contract is pretty much evaluated as
+        // though it was the first (or last) assertion in the function.
+        let body = self.transformer.body(self.tcx, instance);
+        let mangled_name = instance.mangled_name();
+        //assert!(1==0);
+        let goto_contract = self.codegen_modifies_contract(
+            &mangled_name,
+            instance,
+            self.codegen_span_stable(instance.def.span()),
+        );
+        goto_contract.get_assigns()
+    }
 }

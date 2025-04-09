@@ -464,7 +464,7 @@ mod assert;
 mod bootstrap;
 mod check;
 #[macro_use]
-mod helpers;
+pub (crate) mod helpers;
 mod initialize;
 mod replace;
 mod shared;
@@ -618,5 +618,8 @@ fn contract_main(
         Err(e) => return e.into_compile_error().into(),
     };
 
-    handler.dispatch_on(function_state).into()
+    //handler.dispatch_on(function_state).into()
+    let ret =  handler.dispatch_on(function_state);
+    //println!("ret: {:?}", ret.to_string());
+    ret.into()
 }

@@ -40,6 +40,7 @@ use rustc_target::callconv::FnAbi;
 use stable_mir::mir::Body;
 use stable_mir::mir::mono::Instance;
 use stable_mir::ty::Allocation;
+use stable_mir::DefId;
 use std::fmt::Debug;
 
 pub struct GotocCtx<'tcx> {
@@ -76,6 +77,7 @@ pub struct GotocCtx<'tcx> {
     pub transformer: BodyTransformation,
     /// If there exist some usage of loop contracts int context.
     pub has_loop_contracts: bool,
+    pub assign_for_loop: FxHashMap<DefId, Instance>,
 }
 
 /// Constructor
@@ -106,6 +108,7 @@ impl<'tcx> GotocCtx<'tcx> {
             concurrent_constructs: FxHashMap::default(),
             transformer,
             has_loop_contracts: false,
+            assign_for_loop: FxHashMap::default(),
         }
     }
 }

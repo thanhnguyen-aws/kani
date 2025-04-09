@@ -15,10 +15,12 @@ use crate::kani_middle::kani_functions::{KaniFunction, KaniHook};
 use crate::unwrap_or_return_codegen_unimplemented_stmt;
 use cbmc::goto_program::CIntType;
 use cbmc::goto_program::{BuiltinFn, Expr, Stmt, Type};
+use charon_lib::ast::Rvalue;
+use charon_lib::ullbc_ast::Terminator;
 use rustc_middle::ty::TyCtxt;
 use rustc_smir::rustc_internal;
 use stable_mir::mir::mono::Instance;
-use stable_mir::mir::{BasicBlockIdx, Place};
+use stable_mir::mir::{BasicBlockIdx, Place, Statement, TerminatorKind};
 use stable_mir::ty::RigidTy;
 use stable_mir::{CrateDef, ty::Span};
 use std::collections::HashMap;
@@ -718,9 +720,21 @@ impl GotocHook for LoopInvariantRegister {
     ) -> Stmt {
         let loc = gcx.codegen_span_stable(span);
         let func_exp = gcx.codegen_func_expr(instance, loc);
-
         gcx.has_loop_contracts = true;
-
+        let def_id = instance.ty().kind().fn_def().unwrap().0.def_id();
+        let asg: Option<&Instance> = gcx.assign_for_loop.get(&def_id);
+        let stmt = match asg {
+            Some(inst) => {
+                let lambda = gcx.assign_closure_to_Lamda(inst.clone());
+                Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
+                    func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
+                ).with_loop_assigns(lambda)
+            }
+            None => {
+                Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
+                    func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),)
+            }
+        };
         if gcx.queries.args().unstable_features.contains(&"loop-contracts".to_string()) {
             // When loop-contracts is enabled, codegen
             // free(0)
@@ -733,9 +747,7 @@ impl GotocHook for LoopInvariantRegister {
                     BuiltinFn::Free
                         .call(vec![Expr::pointer_constant(0, Type::void_pointer())], loc)
                         .as_stmt(loc),
-                    Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
-                        func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
-                    ),
+                    stmt,
                 ],
                 loc,
             )
@@ -751,15 +763,80 @@ impl GotocHook for LoopInvariantRegister {
                     )
                     .goto_expr
                     .assign(Expr::c_true(), loc),
-                    Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
-                        func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
-                    ),
+                    stmt,
                 ],
                 loc,
             )
         }
     }
 }
+
+pub struct LoopAssign;
+
+impl GotocHook for LoopAssign {
+    fn hook_applies(&self, _tcx: TyCtxt, instance: Instance) -> bool {
+        if instance.body().is_none() {
+            return false;
+        }
+        let bb = instance.body().unwrap();
+        if bb.blocks.first().is_none() {
+            return false;
+        }
+        let first_block = bb.blocks.first().unwrap();
+        match &first_block.terminator.kind {
+            TerminatorKind::Call{func,..} => {
+                let t= func
+                .ty(bb.locals())
+                .ok()
+                .map(|fn_ty| fn_ty.kind().rigid().unwrap().clone());
+                match t {
+                    Some(RigidTy::FnDef(fn_def, ..)) => {
+                        let fn_name = fn_def.name();
+                        return fn_name.contains("kani_register_loop_contract");
+                    }
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+        let TerminatorKind::Call{func,..} = first_block.terminator.kind  else {return false};
+        let Some(RigidTy::FnDef(fn_def, ..)) = func
+        .ty(bb.locals())
+        .ok()
+        .map(|fn_ty| fn_ty.kind().rigid().unwrap().clone())
+        else {return false};
+        let fn_name = fn_def.name();
+        return fn_name.contains("kani_register_loop_contract");
+    }
+
+    fn handle(
+        &self,
+        gcx: &mut GotocCtx,
+        instance: Instance,
+        fargs: Vec<Expr>,
+        assign_to: &Place,
+        target: Option<BasicBlockIdx>,
+        span: Span,
+    ) -> Stmt {
+        let loc = gcx.codegen_span_stable(span);
+        let func_exp = gcx.codegen_func_expr(instance, loc);
+
+        gcx.has_loop_contracts = true;
+        let bb = instance.body().unwrap();
+        let first_block = bb.blocks.first().unwrap();
+        if let TerminatorKind::Call{func,..} = &first_block.terminator.kind {
+            if let Some(RigidTy::FnDef(fn_def, ..)) = func
+            .ty(bb.locals())
+            .ok()
+            .map(|fn_ty| fn_ty.kind().rigid().unwrap().clone())
+            {gcx.assign_for_loop.insert(fn_def.def_id(), instance.clone());}
+        }
+
+        Stmt::ret(None, loc)
+    }
+}
+
+
 
 pub fn fn_hooks() -> GotocHooks {
     let kani_lib_hooks = [
@@ -786,6 +863,7 @@ pub fn fn_hooks() -> GotocHooks {
             Rc::new(RustAlloc),
             Rc::new(MemCmp),
             Rc::new(LoopInvariantRegister),
+            Rc::new(LoopAssign),
         ],
     }
 }

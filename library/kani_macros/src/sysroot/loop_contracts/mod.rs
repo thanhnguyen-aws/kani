@@ -9,9 +9,9 @@ use proc_macro_error2::abort_call_site;
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::token::AndAnd;
-use syn::{BinOp, Expr, ExprBinary, Stmt};
+use syn::{BinOp, Expr, ExprBinary, Stmt, LocalInit, PatIdent, parse_quote, Local, Pat};
 use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
-use crate::contracts::helpers::{chunks_by, is_token_stream_2_comma, matches_path};
+use super::contracts::helpers::{chunks_by, is_token_stream_2_comma, matches_path};
 
 /// Expand loop contracts macros.
 ///
@@ -76,7 +76,7 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
             note = "for now, loop contracts is only supported for while-loops.";
         ),
     }
-    quote!(
+    let t = quote!(
         {
         // Dummy function used to force the compiler to capture the environment.
         // We cannot call closures inside constant functions.
@@ -86,8 +86,9 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
         const fn #register_ident<F: Fn() -> bool>(_f: &F, _transformed: usize) -> bool {
             true
         }
-        #loop_stmt})
-    .into()
+        #loop_stmt});
+    println!("{}", t.to_string());    
+    t.into()
 }
 
 fn generate_unique_id_from_span(stmt: &Stmt) -> String {
@@ -102,9 +103,10 @@ fn generate_unique_id_from_span(stmt: &Stmt) -> String {
     format!("_{:?}_{:?}_{:?}_{:?}", start.line(), start.column(), end.line(), end.column())
 }
 
-
+const WRAPPER_ARG: &str = "_loop_wrapper_arg";
+const CLOSURE_ARG: &str = "_kani_loop_assign_closure";
 pub fn loop_assign(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = chunks_by(TokenStream2::from(attr), is_token_stream_2_comma)
+    let attr : Vec<Expr> = chunks_by(TokenStream2::from(attr), is_token_stream_2_comma)
         .map(syn::parse2)
         .filter_map(|expr| match expr {
             Err(e) => {
@@ -114,26 +116,37 @@ pub fn loop_assign(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
     let wrapper_arg_ident = Ident::new(WRAPPER_ARG, Span::call_site());
-    let wrapper_tuple = body_stmts.iter_mut().find_map(|stmt| {
-        if let Stmt::Local(Local {
-            pat: Pat::Ident(PatIdent { ident, .. }),
-            init: Some(LocalInit { expr, .. }),
-            ..
-        }) = stmt
-        {
-            (ident == &wrapper_arg_ident).then_some(expr.as_mut())
-        } else {
-            None
-        }
-    });
-    if let Some(Expr::Tuple(values)) = wrapper_tuple {
-        values.elems.extend(attr.iter().map(|attr| {
-            let expr: Expr = parse_quote!(#attr
-            as *const _);
-            expr
-        }));
-    } else {
-        unreachable!("Expected tuple but found `{wrapper_tuple:?}`")
-    }
-    quote!({#(#body_stmts)*})        
+    let closure_ident = Ident::new(CLOSURE_ARG, Span::call_site());
+    let mut loop_stmt: Stmt = syn::parse(item.clone()).unwrap();
+    let (mut loop_body, loop_guard) = match loop_stmt {
+        Stmt::Expr(ref mut e, _) => match e {
+            Expr::While(ew) => (ew.body.clone(), ew.cond.clone()),
+            _ => panic!(),
+        },
+        _ => panic!(),
+    };
+    let body_stmts = loop_body.stmts.clone();
+    let closure_args = attr.iter().map (|e| {let i : Expr = parse_quote!(#e as * const _); i});
+
+    let mut closure_stmts : Vec<Stmt> = parse_quote!(
+        let #wrapper_arg_ident = (#(#closure_args),*);
+        let mut #closure_ident = |i|{};
+        #closure_ident(#wrapper_arg_ident);
+    );
+    closure_stmts.extend(body_stmts);
+
+    match loop_stmt {
+        Stmt::Expr(ref mut e, _) => match e {
+            Expr::While(ew) => ew.body.stmts = closure_stmts.clone(),
+            _ => panic!(),
+        },
+        _ => panic!(),
+    };
+    let t = quote! (#loop_stmt);
+    //let t = quote! ({#wrapper_assign; #closure_def;});
+    println!("{}", t.to_string());
+    assert!(1==0);
+    //quote!({#(#body_stmts)*})     (#(#attr)*)     
+    t.into()
+    //item
 }

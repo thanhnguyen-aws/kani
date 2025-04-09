@@ -105,6 +105,10 @@ impl FunctionContract {
     pub fn new(assigns: Vec<Lambda>) -> Self {
         Self { assigns }
     }
+
+    pub fn get_assigns(&self) -> Vec<Lambda> {
+        self.assigns.clone()
+    }
 }
 
 /// Currently, only C is understood by CBMC.
