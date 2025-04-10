@@ -87,7 +87,7 @@ pub enum StmtBody {
         // The loop invariants annotated to the goto, which can be
         // applied as loop contracts in CBMC if it is a backward goto.
         loop_invariants: Option<Expr>,
-        assigns: Option<Vec<Lambda>>
+        assigns: Option<Vec<Expr>>
     },
     /// `if (i) { t } else { e }`
     Ifthenelse {
@@ -343,7 +343,7 @@ impl Stmt {
     }
 
     /// `goto dest;` with loop invariant
-    pub fn with_loop_assigns(self, asg: Vec<Lambda>) -> Self {
+    pub fn with_loop_assigns(self, asg: Vec<Expr>) -> Self {
         if let Goto { dest, loop_invariants, assigns } = self.body() {
             assert!(assigns.is_none());
             stmt!(Goto { dest: *dest, loop_invariants: loop_invariants.clone(), assigns: Some(asg)}, *self.location())

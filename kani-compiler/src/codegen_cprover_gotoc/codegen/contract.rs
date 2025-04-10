@@ -155,6 +155,8 @@ impl GotocCtx<'_> {
         let modifies_ty = self.local_ty_stable(modifies_local);
         let modifies_args =
             self.codegen_place_stable(&modifies_local.into(), loc).unwrap().goto_expr;
+                
+        println!("modifies_args: {:?}", modifies_args);
         let TyKind::RigidTy(RigidTy::Tuple(modifies_tys)) = modifies_ty.kind() else {
             unreachable!("found {:?}", modifies_ty.kind())
         };
@@ -163,6 +165,151 @@ impl GotocCtx<'_> {
             assert!(ty.kind().is_any_ptr(), "Expected pointer, but found {}", ty);
         }
 
+        let assigns: Vec<_> = modifies_tys
+            .into_iter()
+            // do not attempt to dereference (and assign) a ZST
+            .filter(|ty| !self.is_zst_stable(pointee_type_stable(*ty).unwrap()))
+            .enumerate()
+            .map(|(idx, ty)| {
+                let ptr = modifies_args.clone().member(idx.to_string(), &self.symbol_table);
+                println!("modifies_args ptr: {:?}", ptr);
+                if self.is_fat_pointer_stable(ty) {
+                    let unref = match ty.kind() {
+                        TyKind::RigidTy(RigidTy::RawPtr(pointee_ty, _)) => pointee_ty,
+                        kind => unreachable!("Expected a raw pointer, but found {:?}", kind),
+                    };
+                    let size = match unref.kind() {
+                        TyKind::RigidTy(RigidTy::Slice(elt_type)) => {
+                            elt_type.layout().unwrap().shape().size.bytes()
+                        }
+                        TyKind::RigidTy(RigidTy::Str) => 1,
+                        // For adt, see https://rust-lang.zulipchat.com/#narrow/stream/182449-t-compiler.2Fhelp
+                        TyKind::RigidTy(RigidTy::Adt(..)) => {
+                            todo!("Adt fat pointers not implemented")
+                        }
+                        kind => unreachable!("Generating a slice fat pointer to {:?}", kind),
+                    };
+                    Lambda::as_contract_for(
+                        &goto_annotated_fn_typ,
+                        None,
+                        Expr::symbol_expression(
+                            "__CPROVER_object_upto",
+                            Type::code(
+                                vec![
+                                    Type::empty()
+                                        .to_pointer()
+                                        .as_parameter(None, Some("ptr".into())),
+                                    Type::size_t().as_parameter(None, Some("size".into())),
+                                ],
+                                Type::empty(),
+                            ),
+                        )
+                        .call(vec![
+                            ptr.clone()
+                                .member("data", &self.symbol_table)
+                                .cast_to(Type::empty().to_pointer()),
+                            ptr.member("len", &self.symbol_table).mul(Expr::size_constant(
+                                size.try_into().unwrap(),
+                                &self.symbol_table,
+                            )),
+                        ]),
+                    )
+                } else {
+                    Lambda::as_contract_for(&goto_annotated_fn_typ, None, ptr.dereference())
+                }
+            })
+            .chain(shadow_memory_assign)
+            .collect();
+        //println!("Lambda: {:?}", assigns);
+        //assert!(1==0);
+        FunctionContract::new(assigns)
+    }
+
+    /// Convert the contract to a CBMC contract, then attach it to `instance`.
+    /// `instance` must have previously been declared.
+    ///
+    /// This merges with any previously attached contracts.
+    pub fn attach_modifies_contract(&mut self, instance: Instance) {
+        // This should be safe, since the contract is pretty much evaluated as
+        // though it was the first (or last) assertion in the function.
+        assert!(self.current_fn.is_none());
+        let body = self.transformer.body(self.tcx, instance);
+        self.set_current_fn(instance, &body);
+        let mangled_name = instance.mangled_name();
+        let goto_contract = self.codegen_modifies_contract(
+            &mangled_name,
+            instance,
+            self.codegen_span_stable(instance.def.span()),
+        );
+        self.symbol_table.attach_contract(&mangled_name, goto_contract);
+        self.reset_current_fn();
+    }
+
+    pub fn assign_closure_to_Lamda(&mut self, modifies: Instance) -> Vec<Expr> {
+        // This should be safe, since the contract is pretty much evaluated as
+        // though it was the first (or last) assertion in the function.
+        let body = self.transformer.body(self.tcx, modifies);
+        let goto_annotated_fn_name = &modifies.mangled_name();
+        let loc = self.codegen_span_stable(modifies.def.span());
+
+        let goto_annotated_fn_typ = self
+        .symbol_table
+        .lookup(goto_annotated_fn_name)
+        .unwrap_or_else(|| panic!("Function '{goto_annotated_fn_name}' is not declared"))
+        .typ
+        .clone();
+
+        let shadow_memory_assign = self
+        .tcx
+        .all_diagnostic_items(())
+        .name_to_id
+        .get(&rustc_span::symbol::Symbol::intern("KaniMemoryInitializationState"))
+        .map(|attr_id| {
+            self.tcx
+                .symbol_name(rustc_middle::ty::Instance::mono(self.tcx, *attr_id))
+                .name
+                .to_string()
+        })
+        .and_then(|shadow_memory_table| self.symbol_table.lookup(&shadow_memory_table).cloned())
+        .map(|shadow_memory_symbol| {
+            vec![Lambda::as_contract_for(
+                &goto_annotated_fn_typ,
+                None,
+                shadow_memory_symbol.to_expr(),
+            )]
+        })
+        .unwrap_or_default();
+
+
+
+        // The last argument is a tuple with addresses that can be modified.
+        //let modifies_local = Local::from(3 as usize);
+        let modifies_local = Local::from(1 as usize);
+        let TyKind::RigidTy(RigidTy::Tuple(modifies_ty_inp))  = modifies.ty().kind().fn_sig().unwrap().value.inputs()[0].kind() else {
+            unreachable!("found {:?}", modifies.ty().kind())
+        };
+        let modifies_ty = modifies_ty_inp.first().unwrap().clone();
+        let TyKind::RigidTy(RigidTy::Tuple(modifies_tys)) = modifies_ty.kind() else {
+            unreachable!("found {:?}", modifies_ty.kind())
+        };
+        //let curfunc = self.current_fn().name();
+        println!("modifies_ty: {:?}", modifies_ty);
+        println!("modifies_tys: {:?}", modifies_tys);
+        
+        let modifies_args0 =
+            self.codegen_place_stable(&modifies_local.into(), loc).unwrap().goto_expr;
+        let Type::Pointer { typ } = modifies_args0.typ() else {
+            //return Vec::new();
+            unreachable!("need ptr typr{:?}", modifies_args0)
+        };
+        let modifies_args = Expr::symbol_expression("_wrapper_dump", *typ.clone());
+        println!("modifies_args: {:?}", modifies_args);
+
+        for ty in &modifies_tys {
+            assert!(ty.kind().is_any_ptr(), "Expected pointer, but found {}", ty);
+        }
+
+        /* 
         let assigns: Vec<_> = modifies_tys
             .into_iter()
             // do not attempt to dereference (and assign) a ZST
@@ -216,42 +363,20 @@ impl GotocCtx<'_> {
                 }
             })
             .chain(shadow_memory_assign)
+            .collect();*/
+        let assigns: Vec<Expr> = modifies_tys
+            .into_iter()
+            // do not attempt to dereference (and assign) a ZST
+            .filter(|ty| !self.is_zst_stable(pointee_type_stable(*ty).unwrap()))
+            .enumerate()
+            .map(|(idx, ty)| {
+                let ptr = modifies_args.clone().member(idx.to_string(), &self.symbol_table);
+                ptr.dereference()
+            })
             .collect();
-
-        FunctionContract::new(assigns)
-    }
-
-    /// Convert the contract to a CBMC contract, then attach it to `instance`.
-    /// `instance` must have previously been declared.
-    ///
-    /// This merges with any previously attached contracts.
-    pub fn attach_modifies_contract(&mut self, instance: Instance) {
-        // This should be safe, since the contract is pretty much evaluated as
-        // though it was the first (or last) assertion in the function.
-        assert!(self.current_fn.is_none());
-        let body = self.transformer.body(self.tcx, instance);
-        self.set_current_fn(instance, &body);
-        let mangled_name = instance.mangled_name();
-        let goto_contract = self.codegen_modifies_contract(
-            &mangled_name,
-            instance,
-            self.codegen_span_stable(instance.def.span()),
-        );
-        self.symbol_table.attach_contract(&mangled_name, goto_contract);
-        self.reset_current_fn();
-    }
-
-    pub fn assign_closure_to_Lamda(&mut self, instance: Instance) -> Vec<Lambda> {
-        // This should be safe, since the contract is pretty much evaluated as
-        // though it was the first (or last) assertion in the function.
-        let body = self.transformer.body(self.tcx, instance);
-        let mangled_name = instance.mangled_name();
+            
+        println!("Lambda: {:?}", assigns);
         //assert!(1==0);
-        let goto_contract = self.codegen_modifies_contract(
-            &mangled_name,
-            instance,
-            self.codegen_span_stable(instance.def.span()),
-        );
-        goto_contract.get_assigns()
-    }
+        assigns     
+        }
 }

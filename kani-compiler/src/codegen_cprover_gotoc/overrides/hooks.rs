@@ -20,7 +20,7 @@ use charon_lib::ullbc_ast::Terminator;
 use rustc_middle::ty::TyCtxt;
 use rustc_smir::rustc_internal;
 use stable_mir::mir::mono::Instance;
-use stable_mir::mir::{BasicBlockIdx, Place, Statement, TerminatorKind};
+use stable_mir::mir::{BasicBlockIdx, Place, Statement, TerminatorKind, Local};
 use stable_mir::ty::RigidTy;
 use stable_mir::{CrateDef, ty::Span};
 use std::collections::HashMap;
@@ -721,20 +721,33 @@ impl GotocHook for LoopInvariantRegister {
         let loc = gcx.codegen_span_stable(span);
         let func_exp = gcx.codegen_func_expr(instance, loc);
         gcx.has_loop_contracts = true;
-        let def_id = instance.ty().kind().fn_def().unwrap().0.def_id();
-        let asg: Option<&Instance> = gcx.assign_for_loop.get(&def_id);
+        
+        let idx =0;
+        let wrapper = gcx.current_assign_wrapper.clone().unwrap().clone();
+        //let t = wrapper.member(idx.to_string(), &gcx.symbol_table);
+        //println!("t done: {:?}", t);
+        let assign  = vec![wrapper];
+        let stmt = Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
+            func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
+        ).with_loop_assigns(assign);
+        //println!("t done: {:?}", stmt);
+        /* 
         let stmt = match asg {
             Some(inst) => {
-                let lambda = gcx.assign_closure_to_Lamda(inst.clone());
+                //let lambda = gcx.assign_closure_to_Lamda(inst.clone());
+                let wrapper = fargs.last().unwrap().clone();
+                let idx =0;
+                let t = wrapper.member(idx.to_string(), &gcx.symbol_table);
+                let assign  = vec![t];
                 Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
                     func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
-                ).with_loop_assigns(lambda)
+                ).with_loop_assigns(assign)
             }
             None => {
                 Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
                     func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),)
             }
-        };
+        };*/
         if gcx.queries.args().unstable_features.contains(&"loop-contracts".to_string()) {
             // When loop-contracts is enabled, codegen
             // free(0)
@@ -771,7 +784,7 @@ impl GotocHook for LoopInvariantRegister {
     }
 }
 
-pub struct LoopAssign;
+/*pub struct LoopAssign;
 
 impl GotocHook for LoopAssign {
     fn hook_applies(&self, _tcx: TyCtxt, instance: Instance) -> bool {
@@ -832,10 +845,16 @@ impl GotocHook for LoopAssign {
             {gcx.assign_for_loop.insert(fn_def.def_id(), instance.clone());}
         }
 
-        Stmt::ret(None, loc)
+        Stmt::block(
+            vec![
+                Stmt::ret(None, loc),
+            ],
+            loc,
+        )
+        
     }
 }
-
+*/
 
 
 pub fn fn_hooks() -> GotocHooks {
@@ -863,7 +882,7 @@ pub fn fn_hooks() -> GotocHooks {
             Rc::new(RustAlloc),
             Rc::new(MemCmp),
             Rc::new(LoopInvariantRegister),
-            Rc::new(LoopAssign),
+            //Rc::new(LoopAssign),
         ],
     }
 }

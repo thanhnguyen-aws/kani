@@ -597,7 +597,7 @@ pub enum IrepId {
     CSpecLoopInvariant,
     CSpecRequires,
     CSpecEnsures,
-    CSpecAssigns,
+   CSpecAssigns, 
     VirtualFunction,
     ElementType,
     WorkingDirectory,

@@ -615,6 +615,10 @@ impl goto_program::Symbol {
     pub fn to_irep(&self, mm: &MachineModel) -> super::Symbol {
         let mut typ = self.typ.to_irep(mm);
         if let Some(contract) = &self.contract {
+            for v in contract.assigns.iter().map(|req| req.to_irep(mm)){
+                println!("Irep for contr {:?}", v);
+            }
+           
             typ = typ.with_named_sub(
                 IrepId::CSpecAssigns,
                 Irep::just_sub(contract.assigns.iter().map(|req| req.to_irep(mm)).collect()),

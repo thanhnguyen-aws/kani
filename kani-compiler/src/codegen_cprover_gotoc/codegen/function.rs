@@ -11,7 +11,9 @@ use stable_mir::CrateDef;
 use stable_mir::mir::mono::Instance;
 use stable_mir::mir::{Body, Local};
 use stable_mir::ty::{RigidTy, TyKind};
+use stable_mir::mir::TerminatorKind;
 use std::collections::BTreeMap;
+use stable_mir::mir::mono::InstanceDef;
 use tracing::{debug, debug_span};
 
 /// Codegen MIR functions into gotoc
@@ -51,8 +53,49 @@ impl GotocCtx<'_> {
         }
     }
 
+    fn add_assigns_for_loop(&mut self, instance: Instance) -> bool {
+        match instance.ty().kind() {
+            TyKind::RigidTy(RigidTy::FnDef(_, ..)) => {
+                return false
+            }
+            _ => {}
+        }
+        if instance.body().is_none() {
+            return false;
+        }
+        let bb = instance.body().unwrap();
+        if bb.blocks.first().is_none() {
+            return false;
+        }
+        let first_block = bb.blocks.first().unwrap();
+        match &first_block.terminator.kind {
+            TerminatorKind::Call{func,..} => {
+                let t= func
+                .ty(bb.locals())
+                .ok()
+                .map(|fn_ty| fn_ty.kind().rigid().unwrap().clone());
+                match t {
+                    Some(RigidTy::FnDef(fn_def, ..)) => {
+                        let fn_name = fn_def.name();
+                        if fn_name.contains("kani_register_loop_contract")  {
+                            //self.assign_for_loop.insert(fn_def.def_id(), instance.clone());
+                            return true;
+                        }
+                        else {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+    }
+
     pub fn codegen_function(&mut self, instance: Instance) {
+        let k =self.add_assigns_for_loop(instance.clone());
         let name = instance.mangled_name();
+        println!("generating {:?}", name);
         let old_sym = self.symbol_table.lookup(&name).unwrap();
 
         let _trace_span = debug_span!("CodegenFunction", name = instance.name()).entered();

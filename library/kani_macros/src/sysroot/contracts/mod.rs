@@ -620,6 +620,6 @@ fn contract_main(
 
     //handler.dispatch_on(function_state).into()
     let ret =  handler.dispatch_on(function_state);
-    //println!("ret: {:?}", ret.to_string());
+    println!("ret: {:?}", ret.to_string());
     ret.into()
 }

@@ -59,12 +59,16 @@ impl GotocCtx<'_> {
                         location,
                     )
                 } else {
+                    let rhs_expr =self.codegen_rvalue_stable(rhs, location);
+                    if self.codegen_var_base_name(&lhs.local).contains("_wrapper_arg") {
+                        self.current_assign_wrapper = Some (rhs_expr.clone())
+                    }
                     unwrap_or_return_codegen_unimplemented_stmt!(
                         self,
                         self.codegen_place_stable(lhs, location)
                     )
                     .goto_expr
-                    .assign(self.codegen_rvalue_stable(rhs, location), location)
+                    .assign(rhs_expr, location)
                 }
             }
             StatementKind::Deinit(place) => self.codegen_deinit(place, location),
