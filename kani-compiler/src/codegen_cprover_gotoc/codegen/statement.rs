@@ -60,6 +60,7 @@ impl GotocCtx<'_> {
                     )
                 } else {
                     let rhs_expr =self.codegen_rvalue_stable(rhs, location);
+                    let lhs_expr = self.codegen_var_name(&lhs.local);
                     if self.codegen_var_base_name(&lhs.local).contains("_wrapper_arg") {
                         self.current_assign_wrapper = Some (rhs_expr.clone())
                     }
@@ -671,6 +672,9 @@ impl GotocCtx<'_> {
                         if instance.is_foreign_item() {
                             vec![self.codegen_foreign_call(func_exp, fargs, destination, loc)]
                         } else {
+                            if self.codegen_var_base_name(&destination.local).contains("_wrapper_arg") {
+                                self.current_assign_wrapper = Some (func_exp.clone().call(fargs.clone()))
+                            };
                             vec![self.codegen_expr_to_place_stable(
                                 destination,
                                 func_exp.call(fargs),

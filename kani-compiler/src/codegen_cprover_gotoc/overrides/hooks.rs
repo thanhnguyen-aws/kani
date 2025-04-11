@@ -14,7 +14,7 @@ use crate::kani_middle::attributes;
 use crate::kani_middle::kani_functions::{KaniFunction, KaniHook};
 use crate::unwrap_or_return_codegen_unimplemented_stmt;
 use cbmc::goto_program::CIntType;
-use cbmc::goto_program::{BuiltinFn, Expr, Stmt, Type};
+use cbmc::goto_program::{BuiltinFn, Expr, Stmt, Type, ExprValue};
 use charon_lib::ast::Rvalue;
 use charon_lib::ullbc_ast::Terminator;
 use rustc_middle::ty::TyCtxt;
@@ -724,9 +724,39 @@ impl GotocHook for LoopInvariantRegister {
         
         let idx =0;
         let wrapper = gcx.current_assign_wrapper.clone().unwrap().clone();
-        //let t = wrapper.member(idx.to_string(), &gcx.symbol_table);
-        //println!("t done: {:?}", t);
-        let assign  = vec![wrapper];
+        let first = match wrapper.value() {
+            ExprValue::Struct { values } => values.first().unwrap().clone(),
+            _ => unreachable!("wrapper is not a struct")
+        };
+        
+        let ptr = first.clone();
+        let size = 7;
+        let irepexp = Expr::symbol_expression(
+            "__CPROVER_object_upto",
+            Type::code(
+                vec![
+                    Type::empty()
+                        .to_pointer()
+                        .as_parameter(None, Some("ptr".into())),
+                    Type::size_t().as_parameter(None, Some("size".into())),
+                ],
+                Type::empty(),
+            ),
+        )
+        .call(vec![
+            ptr.clone()
+                .member("data", &gcx.symbol_table)
+                .cast_to(Type::empty().to_pointer()),
+            ptr.clone().member("len", &gcx.symbol_table).mul(Expr::size_constant(
+                size.try_into().unwrap(),
+                &gcx.symbol_table,
+            )),
+        ]);
+        
+        println!("wrapper: {:?}", wrapper);
+        println!("wrapper first: {:?}", irepexp);
+        //println!("wrapper ptr: {:?}", ptr);
+        let assign  = vec![irepexp];
         let stmt = Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
             func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
         ).with_loop_assigns(assign);

@@ -95,7 +95,6 @@ impl GotocCtx<'_> {
     pub fn codegen_function(&mut self, instance: Instance) {
         let k =self.add_assigns_for_loop(instance.clone());
         let name = instance.mangled_name();
-        println!("generating {:?}", name);
         let old_sym = self.symbol_table.lookup(&name).unwrap();
 
         let _trace_span = debug_span!("CodegenFunction", name = instance.name()).entered();
