@@ -6,7 +6,7 @@ use super::{PropertyClass, bb_label};
 use crate::codegen_cprover_gotoc::codegen::function::rustc_smir::region_from_coverage_opaque;
 use crate::codegen_cprover_gotoc::{GotocCtx, VtableCtx};
 use crate::unwrap_or_return_codegen_unimplemented_stmt;
-use cbmc::goto_program::{Expr, Location, Stmt, Type};
+use cbmc::goto_program::{Expr, Location, Stmt, Type, ExprValue};
 use rustc_abi::Size;
 use rustc_abi::{FieldsShape, Primitive, TagEncoding, Variants};
 use rustc_middle::ty::layout::LayoutOf;
@@ -60,9 +60,22 @@ impl GotocCtx<'_> {
                     )
                 } else {
                     let rhs_expr =self.codegen_rvalue_stable(rhs, location);
-                    let lhs_expr = self.codegen_var_name(&lhs.local);
+                    let lhs_expr = self.codegen_place_stable(lhs, location).unwrap().goto_expr;
                     if self.codegen_var_base_name(&lhs.local).contains("_wrapper_arg") {
-                        self.current_assign_wrapper = Some (rhs_expr.clone())
+                        self.current_assign_wrapper = Some (lhs_expr.clone())
+                    }
+                    match rhs_expr.value() {
+                        ExprValue::AddressOf(e) =>{
+                            let t = e.value();
+                            match *t {
+                                ExprValue::Symbol { identifier } =>
+                                    if identifier.to_string().contains("_wrapper_func") {
+                                        self.current_assign_wrapper = Some (lhs_expr.clone())
+                                    }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
                     }
                     unwrap_or_return_codegen_unimplemented_stmt!(
                         self,
@@ -649,7 +662,9 @@ impl GotocCtx<'_> {
                     );
                     fargs
                 };
-
+                let fargs0 = fargs.clone();
+                println!("args {:?}", fargs0.first().unwrap());
+                println!("wrapp {:?}", self.current_assign_wrapper);
                 if let Some(hk) = self.hooks.hook_applies(self.tcx, instance) {
                     return hk.handle(self, instance, fargs, destination, *target, span);
                 }
@@ -683,6 +698,7 @@ impl GotocCtx<'_> {
                         }
                     }
                 };
+                
                 stmts.push(self.codegen_end_call(*target, loc));
                 Stmt::block(stmts, loc)
             }

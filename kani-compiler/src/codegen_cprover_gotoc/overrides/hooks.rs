@@ -701,6 +701,8 @@ impl GotocHook for InitContracts {
 /// ```
 /// with loop invariants (call to the register function) annotated as
 /// a named sub of the `goto`.
+
+
 pub struct LoopInvariantRegister;
 
 impl GotocHook for LoopInvariantRegister {

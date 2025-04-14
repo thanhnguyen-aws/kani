@@ -93,7 +93,7 @@ impl GotocCtx<'_> {
     }
 
     pub fn codegen_function(&mut self, instance: Instance) {
-        let k =self.add_assigns_for_loop(instance.clone());
+
         let name = instance.mangled_name();
         let old_sym = self.symbol_table.lookup(&name).unwrap();
 

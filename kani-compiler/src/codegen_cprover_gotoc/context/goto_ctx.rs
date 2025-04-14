@@ -78,6 +78,8 @@ pub struct GotocCtx<'tcx> {
     /// If there exist some usage of loop contracts int context.
     pub has_loop_contracts: bool,
     pub current_assign_wrapper: Option<Expr>,
+    pub current_assign_closure: Option<Expr>,
+    pub current_assign_instance: Option<Instance>,
 }
 
 /// Constructor
@@ -109,6 +111,8 @@ impl<'tcx> GotocCtx<'tcx> {
             transformer,
             has_loop_contracts: false,
             current_assign_wrapper: None,
+            current_assign_closure: None,
+            current_assign_instance: None,
         }
     }
 }
