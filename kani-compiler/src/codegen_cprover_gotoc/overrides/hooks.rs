@@ -14,7 +14,7 @@ use crate::kani_middle::attributes;
 use crate::kani_middle::kani_functions::{KaniFunction, KaniHook};
 use crate::unwrap_or_return_codegen_unimplemented_stmt;
 use cbmc::goto_program::CIntType;
-use cbmc::goto_program::{BuiltinFn, Expr, Stmt, Type};
+use cbmc::goto_program::{BuiltinFn, Expr, Stmt, Type, ExprValue};
 use rustc_middle::ty::TyCtxt;
 use rustc_smir::rustc_internal;
 use stable_mir::mir::mono::Instance;
@@ -722,6 +722,22 @@ impl GotocHook for LoopInvariantRegister {
         gcx.has_loop_contracts = true;
 
         if gcx.queries.args().unstable_features.contains(&"loop-contracts".to_string()) {
+            
+            let mut stmt = Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
+                func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),);
+            println!("stmt: {:?}", stmt);
+            if let Some(wrapper) = gcx.current_assign_wrapper.clone() 
+            {
+                println!("wrapper: {:?}", wrapper.value());
+                let assign = match wrapper.value() {
+                    ExprValue::Struct { values } => values.clone(),
+                    _ => unreachable!("wrapper is not a struct")
+                };
+                
+                stmt = stmt.with_loop_assigns(assign)
+            }
+            println!("stmt: {:?}", stmt);
+            
             // When loop-contracts is enabled, codegen
             // free(0)
             // goto target --- with loop contracts annotated.
@@ -733,9 +749,7 @@ impl GotocHook for LoopInvariantRegister {
                     BuiltinFn::Free
                         .call(vec![Expr::pointer_constant(0, Type::void_pointer())], loc)
                         .as_stmt(loc),
-                    Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
-                        func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
-                    ),
+                    stmt,
                 ],
                 loc,
             )

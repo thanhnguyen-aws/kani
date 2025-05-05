@@ -9,91 +9,87 @@ use proc_macro_error2::abort_call_site;
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::token::AndAnd;
-use syn::{BinOp, Block, Expr, ExprBinary, Ident, Stmt, parse_quote, visit_mut::VisitMut};
+use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
+use syn::{BinOp, Block, Expr, ExprBinary, Stmt, parse_quote, visit_mut::VisitMut, ExprLoop, ExprForLoop};
+use super::contracts::helpers::{chunks_by, is_token_stream_2_comma, matches_path};
 
 /*
-Transform the loop to support on_entry(expr) : the value of expr before entering the loop
-1. For each on_entry(expr) in the loop variant, replace it with a newly generated "memory" variable old_k
-2. Add the declaration of i before the loop: let old_k = expr
-For example:
-#[kani::loop_invariant(on_entry(x+y) = x + y -1)]
-while(....)
+    Transform the loop to support on_entry(expr) : the value of expr before entering the loop
+    1. For each on_entry(expr) in the loop variant, replace it with a newly generated "memory" variable old_k
+    2. Add the declaration of i before the loop: let old_k = expr
+    For example:
+    #[kani::loop_invariant(on_entry(x+y) = x + y -1)]
+    while(....)
 
-is transformed into
-let old_1 = x + y
-#[kani::loop_invariant(old_1 = x + y -1)]
-while(....)
+    is transformed into
+    let old_1 = x + y
+    #[kani::loop_invariant(old_1 = x + y -1)]
+    while(....)
 
-Then the loop_invartiant is transformed
+    Then the loop_invartiant is transformed.
 
-*/
+    Transform the loop to support prev(expr) : the value of expr at the end of the previous iteration
+    Semantic: If the loop has at least 1 iteration: prev(expr) is the value of expr at the end of the previous iteration. Otherwise, just remove the loop (without check for the invariant too).
 
-/*
-Transform the loop to support prev(expr) : the value of expr at the end of the previous iteration
-Semantic: If the loop has at least 1 iteration: prev(expr) is the value of expr at the end of the previous iteration. Otherwise, just remove the loop (without check for the invariant too).
+    Transformation: basically, if the loop has at least 1 iteration (loop_quard is satisfied at the beginning), we unfold the loop once, declare the variables for prev values and update them at the beginning of the loop body.
+    Otherwise, we remove the loop.
+    If there is a prev(expr) in the loop_invariant:
+    1. Firstly, add an if block whose condition is the loop_quard, inside its body add/do the followings:
+    2. For each prev(expr) in the loop variant, replace it with a newly generated "memory" variable prev_k
+    3. Add the declaration of prev_k before the loop: let mut prev_k = expr
+    4. Define a mut closure whose body is exactly the loop body, but replace all continue/break statements with return true/false statements,
+            then add a final return true statement at the end of it
+    5. Add an if statement with condition to be the that closure's call (the same as run the loop once):
+        True block: add the loop with expanded macros (see next section) and inside the loop body:
+            add the assignment statements (exactly the same as the declarations without the "let mut") on the top to update the "memory" variables
+        Else block: Add the assertion for the loop_invariant (not includes the loop_quard): check if the loop_invariant holds after the first iteration.
 
-Transformation: basically, if the loop has at least 1 iteration (loop_quard is satisfied at the beginning), we unfold the loop once, declare the variables for prev values and update them at the beginning of the loop body.
-Otherwise, we remove the loop.
-If there is a prev(expr) in the loop_invariant:
-1. Firstly, add an if block whose condition is the loop_quard, inside its body add/do the followings:
-2. For each prev(expr) in the loop variant, replace it with a newly generated "memory" variable prev_k
-3. Add the declaration of prev_k before the loop: let mut prev_k = expr
-4. Define a mut closure whose body is exactly the loop body, but replace all continue/break statements with return true/false statements,
-        then add a final return true statement at the end of it
-5. Add an if statement with condition to be the that closure's call (the same as run the loop once):
-    True block: add the loop with expanded macros (see next section) and inside the loop body:
-        add the assignment statements (exactly the same as the declarations without the "let mut") on the top to update the "memory" variables
-    Else block: Add the assertion for the loop_invariant (not includes the loop_quard): check if the loop_invariant holds after the first iteration.
-
-For example:
-#[kani::loop_invariant(prev(x+y) = x + y -1 && ...)]
-while(loop_guard)
-{
-    loop_body
-}
-
-is transformed into
-
-assert!(loop_guard);
-let mut prev_1 = x + y;
-let mut loop_body_closure = || {
-    loop_body_replaced //replace breaks/continues in loop_body with returns
-};
-if loop_body_closure(){
-    #[kani::loop_invariant(prev_1  = x + y -1)]
+    For example:
+    #[kani::loop_invariant(prev(x+y) = x + y -1 && ...)]
     while(loop_guard)
     {
-        prev_1 = x + y;
         loop_body
     }
-}
-else{
-    assert!(prev_1 = x + y -1 && ...);
-}
 
+    is transformed into
 
+    assert!(loop_guard);
+    let mut prev_1 = x + y;
+    let mut loop_body_closure = || {
+        loop_body_replaced //replace breaks/continues in loop_body with returns
+    };
+    if loop_body_closure(){
+        #[kani::loop_invariant(prev_1  = x + y -1)]
+        while(loop_guard)
+        {
+            prev_1 = x + y;
+            loop_body
+        }
+    }
+    else{
+        assert!(prev_1 = x + y -1 && ...);
+    }
+
+    Finally, expand the loop contract macro.
+
+    A while loop of the form
+    ``` rust
+     while guard {
+         body
+     }
+    ```
+    will be annotated as
+    ``` rust
+    #[inline(never)]
+    #[kanitool::fn_marker = "kani_register_loop_contract"]
+    const fn kani_register_loop_contract_id<T, F: FnOnce() -> T>(f: F) -> T {
+        unreachable!()
+    }
+     while kani_register_loop_contract_id(|| -> bool {inv};) && guard {
+         body
+     }
+    ```
 */
-
-/// After that:
-/// Expand loop contracts macros.
-///
-/// A while loop of the form
-/// ``` rust
-///  while guard {
-///      body
-///  }
-/// ```
-/// will be annotated as
-/// ``` rust
-/// #[inline(never)]
-/// #[kanitool::fn_marker = "kani_register_loop_contract"]
-/// const fn kani_register_loop_contract_id<T, F: FnOnce() -> T>(f: F) -> T {
-///     unreachable!()
-/// }
-///  while kani_register_loop_contract_id(|| -> bool {inv};) && guard {
-///      body
-///  }
-/// ```
 
 struct TransformationResult {
     transformed_expr: Expr,
@@ -111,12 +107,7 @@ struct CallReplacer {
 // This impl replaces any function call of a function name : old_name with a newly generated variable.
 impl CallReplacer {
     fn new(old_name: &str, var_prefix: String) -> Self {
-        Self {
-            old_name: old_name.to_string(),
-            replacements: Vec::new(),
-            counter: 0,
-            var_prefix: var_prefix,
-        }
+        Self { old_name: old_name.to_string(), replacements: Vec::new(), counter: 0, var_prefix }
     }
 
     fn generate_var_name(&mut self) -> proc_macro2::Ident {
@@ -168,12 +159,9 @@ fn transform_function_calls(
 
     let mut newreplace: Vec<(Expr, Ident)> = Vec::new();
     for (call, var) in replacer.replacements {
-        match call {
-            Expr::Call(call_expr) => {
-                let insideexpr = call_expr.args[0].clone();
-                newreplace.push((insideexpr, var.clone()));
-            }
-            _ => {}
+        if let Expr::Call(call_expr) = call {
+            let insideexpr = call_expr.args[0].clone();
+            newreplace.push((insideexpr, var.clone()));
         }
     }
 
@@ -230,19 +218,64 @@ fn transform_break_continue(block: &mut Block) {
         return (true, None);
     };
     // Add semicolon to the last statement if it's an expression without semicolon
-    if let Some(last_stmt) = block.stmts.last_mut() {
-        if let Stmt::Expr(expr, ref mut semi) = last_stmt {
-            if semi.is_none() {
-                *semi = Some(Default::default());
-            }
+    if let Some(Stmt::Expr(_, ref mut semi)) = block.stmts.last_mut() {
+        if semi.is_none() {
+            *semi = Some(Default::default());
         }
     }
     block.stmts.push(return_stmt);
 }
 
+
+fn convert_for_to_loop(for_loop: &ExprForLoop) -> (Stmt, Stmt) {
+    // Extract components from for loop
+    let pat = &for_loop.pat;
+    let expr = &for_loop.expr;
+    let body = &for_loop.body.stmts;
+
+    // Create iterator variable
+    let iter_ident = quote::format_ident!("__iter");
+
+    // Create while loop condition and body
+    let loop_body: Block = parse_quote! {{
+        if let Some(#pat) = #iter_ident.next() {
+            #(#body)*
+        } else {
+            break;
+        }
+    }};
+
+    // Construct while loop
+    let loopstmt : Stmt = parse_quote! {
+            loop #loop_body
+    };
+
+
+    let iterdecl : Stmt = parse_quote! {
+        let mut #iter_ident = #expr.into_iter();
+    };
+    let t = quote! {
+        #iterdecl
+        #loopstmt
+    };
+    (loopstmt, iterdecl)
+}
+
 pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
     // parse the stmt of the loop
-    let mut loop_stmt: Stmt = syn::parse(item.clone()).unwrap();
+    let org_loop_stmt: Stmt = syn::parse(item.clone()).unwrap();
+    let mut loop_stmt: Stmt = org_loop_stmt.clone();
+    let mut iterdecl: Stmt = parse_quote! {
+        {
+            assert!(true);
+        }
+    };
+
+    if let Stmt::Expr(e, _) = org_loop_stmt {
+        if let Expr::ForLoop(for_loop) = e {
+            (loop_stmt, iterdecl) = convert_for_to_loop(&for_loop);
+        }
+    }
 
     // name of the loop invariant as closure of the form
     // __kani_loop_invariant_#startline_#startcol_#endline_#endcol
@@ -362,6 +395,7 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
             const fn #register_ident<F: Fn() -> bool>(_f: &F, _transformed: usize) -> bool {
                 true
             }
+            #iterdecl
             #loop_stmt
         }
         else {
@@ -371,7 +405,7 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .into()
     } else {
-        quote!(
+        let t =quote!(
         {
         #(#onentry_decl_stms)*
         // Dummy function used to force the compiler to capture the environment.
@@ -382,9 +416,11 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
         const fn #register_ident<F: Fn() -> bool>(_f: &F, _transformed: usize) -> bool {
             true
         }
+        #iterdecl
         #loop_stmt
-        })
-        .into()
+        });
+        println!("{}", t);
+        t.into()
     }
 }
 
@@ -398,4 +434,54 @@ fn generate_unique_id_from_span(stmt: &Stmt) -> String {
 
     // Create a tuple of location information (file path, start line, start column, end line, end column)
     format!("_{:?}_{:?}_{:?}_{:?}", start.line(), start.column(), end.line(), end.column())
+}
+
+
+
+pub fn loop_assign(attr: TokenStream, item: TokenStream) -> TokenStream {
+    const WRAPPER_ARG: &str = "_loop_wrapper_arg";
+    const CLOSURE_ARG: &str = "_kani_loop_assign_closure";
+    let attr : Vec<Expr> = chunks_by(TokenStream2::from(attr), is_token_stream_2_comma)
+        .map(syn::parse2)
+        .filter_map(|expr| match expr {
+            Err(e) => {
+                None
+            }
+            Ok(expr) => Some(expr),
+        })
+        .collect();
+    let wrapper_arg_ident = Ident::new(WRAPPER_ARG, Span::call_site());
+    let closure_ident = Ident::new(CLOSURE_ARG, Span::call_site());
+    let mut loop_stmt: Stmt = syn::parse(item.clone()).unwrap();
+    let (mut loop_body, loop_guard) = match loop_stmt {
+        Stmt::Expr(ref mut e, _) => match e {
+            Expr::While(ew) => (ew.body.clone(), ew.cond.clone()),
+            _ => panic!(),
+        },
+        _ => panic!(),
+    };
+    let body_stmts = loop_body.stmts.clone();
+    let closure_args = attr.iter().map (|e| {let i : Expr = parse_quote!(#e as * const _); i});
+
+    let mut closure_stmts : Vec<Stmt> = parse_quote!(
+        let #wrapper_arg_ident = (#(#closure_args),*);
+        let mut #closure_ident = |i|{};
+        #closure_ident(#wrapper_arg_ident);
+    );
+    closure_stmts.extend(body_stmts);
+
+    match loop_stmt {
+        Stmt::Expr(ref mut e, _) => match e {
+            Expr::While(ew) => ew.body.stmts = closure_stmts.clone(),
+            _ => panic!(),
+        },
+        _ => panic!(),
+    };
+    let t = quote! (#loop_stmt);
+    //let t = quote! ({#wrapper_assign; #closure_def;});
+    println!("{}", t.to_string());
+    assert!(1==0);
+    //quote!({#(#body_stmts)*})     (#(#attr)*)     
+    t.into()
+    //item
 }

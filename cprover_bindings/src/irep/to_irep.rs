@@ -517,14 +517,26 @@ impl ToIrep for StmtBody {
                     arguments_irep(arguments.iter(), mm),
                 ],
             ),
-            StmtBody::Goto { dest, loop_invariants } => {
+            StmtBody::Goto { dest, loop_invariants , assigns } => {
                 let stmt_goto = code_irep(IrepId::Goto, vec![])
                     .with_named_sub(IrepId::Destination, Irep::just_string_id(dest.to_string()));
                 if let Some(inv) = loop_invariants {
-                    stmt_goto.with_named_sub(
-                        IrepId::CSpecLoopInvariant,
-                        inv.clone().and(Expr::bool_true()).to_irep(mm),
-                    )
+                    if let Some(assigns) = assigns {
+                        println!("assign here");
+                        stmt_goto.with_named_sub(
+                            IrepId::CSpecLoopInvariant,
+                            inv.clone().and(Expr::bool_true()).to_irep(mm),
+                        ).with_named_sub(
+                            IrepId::CSpecAssigns, 
+                            Irep::just_sub(assigns.iter().map(|req| req.to_irep(mm)).collect())
+                        )
+
+                    } else { 
+                        stmt_goto.with_named_sub(
+                            IrepId::CSpecLoopInvariant,
+                            inv.clone().and(Expr::bool_true()).to_irep(mm),
+                        )
+                    }
                 } else {
                     stmt_goto
                 }

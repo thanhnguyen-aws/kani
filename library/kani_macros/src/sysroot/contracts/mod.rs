@@ -37,7 +37,7 @@
 //! contracts need to be analyzed. It will do the following:
 //! 1. Annotate the function with extra `kanitool` attributes
 //! 2. Generate closures for each contract processing scenario (recursive check, simple check,
-//! replacement, and regular execution).
+//!    replacement, and regular execution).
 //!
 //! Subsequent expansions will detect the existence of the extra `kanitool` attributes,
 //! and they will only expand the body of the closures generated in the initial phase.
@@ -464,10 +464,11 @@ mod assert;
 mod bootstrap;
 mod check;
 #[macro_use]
-mod helpers;
+pub (crate) mod helpers;
 mod initialize;
 mod replace;
 mod shared;
+
 
 const INTERNAL_RESULT_IDENT: &str = "result_kani_internal";
 
