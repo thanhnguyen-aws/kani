@@ -78,6 +78,7 @@ pub struct GotocCtx<'tcx> {
     pub transformer: BodyTransformation,
     /// If there exist some usage of loop contracts int context.
     pub has_loop_contracts: bool,
+
 }
 
 /// Constructor
@@ -315,21 +316,26 @@ impl GotocCtx<'_> {
     pub fn handle_quantifiers(&mut self) {
         // Store the found quantifiers and the inlined results.
         let mut to_modify: BTreeMap<InternedString, SymbolValues> = BTreeMap::new();
+        let mut suffix_count: u16 = 0;
         for (key, symbol) in self.symbol_table.iter() {
             if let SymbolValues::Stmt(stmt) = &symbol.value {
-                let new_stmt_val = SymbolValues::Stmt(self.handle_quantifiers_in_stmt(stmt));
+                let new_stmt = self.handle_quantifiers_in_stmt(stmt, &mut suffix_count);
+                let new_stmt_val = SymbolValues::Stmt(new_stmt);
                 to_modify.insert(*key, new_stmt_val);
+                
             }
         }
 
         // Update the found quantifiers with the inlined results.
         for (key, symbol_value) in to_modify {
+            println!("Key {:?}", key);
+            println!("Sym {:?}", symbol_value);
             self.symbol_table.lookup_mut(key).unwrap().update(symbol_value);
         }
     }
 
     /// Find all quantifier expressions in `stmt` and recursively inline functions.
-    fn handle_quantifiers_in_stmt(&self, stmt: &Stmt) -> Stmt {
+    fn handle_quantifiers_in_stmt(&self, stmt: &Stmt, suffix_count: &mut u16,) -> Stmt {
         match &stmt.body() {
             // According to the hook handling for quantifiers, quantifier expressions must be of form
             // lhs = typecast(qex, c_bool)
@@ -342,13 +348,13 @@ impl GotocCtx<'_> {
                             let mut visited_func_symbols: HashSet<InternedString> = HashSet::new();
                             // We count the number of function that we have inlined, and use the count to
                             // make inlined labeled unique.
-                            let mut suffix_count: u16 = 0;
+                            //let mut suffix_count: u16 = 0;
 
                             let end_stmt = Stmt::code_expression(
                                 self.inline_function_calls_in_expr(
                                     domain,
                                     &mut visited_func_symbols,
-                                    &mut suffix_count,
+                                    suffix_count,
                                 )
                                 .unwrap(),
                                 *domain.location(),
@@ -371,13 +377,13 @@ impl GotocCtx<'_> {
                             let mut visited_func_symbols: HashSet<InternedString> = HashSet::new();
                             // We count the number of function that we have inlined, and use the count to
                             // make inlined labeled unique.
-                            let mut suffix_count = 0;
+                            //let mut suffix_count = 0;
 
                             let end_stmt = Stmt::code_expression(
                                 self.inline_function_calls_in_expr(
                                     domain,
                                     &mut visited_func_symbols,
-                                    &mut suffix_count,
+                                    suffix_count,
                                 )
                                 .unwrap(),
                                 *domain.location(),
@@ -401,13 +407,13 @@ impl GotocCtx<'_> {
                 };
                 Stmt::assign(lhs.clone(), new_rhs, *stmt.location())
             }
-            // Recursively find quantifier expressions.
+            // Recursively find quantifier expressions.             
             StmtBody::Block(stmts) => Stmt::block(
-                stmts.iter().map(|stmt| self.handle_quantifiers_in_stmt(stmt)).collect(),
+                stmts.iter().map(|stmt| self.handle_quantifiers_in_stmt(stmt, suffix_count)).collect(),
                 *stmt.location(),
             ),
             StmtBody::Label { label, body } => {
-                self.handle_quantifiers_in_stmt(body).with_label(*label)
+                self.handle_quantifiers_in_stmt(body, suffix_count).with_label(*label)
             }
             _ => stmt.clone(),
         }
@@ -518,7 +524,7 @@ impl GotocCtx<'_> {
     /// Recursively inline all function calls in `expr`.
     /// `visited_func_symbols` contain all function symbols in the stack.
     /// `suffix_count` is used to make inlined labels unique.
-    fn inline_function_calls_in_expr(
+    pub fn inline_function_calls_in_expr(
         &self,
         expr: &Expr,
         visited_func_symbols: &mut HashSet<InternedString>,
@@ -633,6 +639,10 @@ impl GotocCtx<'_> {
                             .push(Stmt::skip(*expr.location()).with_label(end_label));
                         stmts_of_inlined_body
                             .push(Stmt::code_expression(end_stmt.unwrap(), *expr.location()));
+                        
+                        //for st in stmts_of_inlined_body.iter() {
+                        //    println!("{:?}", st);
+                        //}
 
                         // Recursively inline function calls in the function body.
                         let res = self.inline_function_calls_in_expr(
@@ -644,9 +654,9 @@ impl GotocCtx<'_> {
                             visited_func_symbols,
                             suffix_count,
                         );
-
+                        
                         visited_func_symbols.remove(identifier);
-
+                        
                         return res;
                     } else {
                         unreachable!()
