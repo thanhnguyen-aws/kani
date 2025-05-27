@@ -336,7 +336,14 @@ impl Stmt {
     pub fn with_loop_contracts(self, inv: Expr) -> Self {
         if let Goto { dest, loop_invariants, loop_assigns } = self.body() {
             assert!(loop_invariants.is_none());
-            stmt!(Goto { dest: *dest, loop_invariants: Some(inv), loop_assigns: loop_assigns.clone() }, *self.location())
+            stmt!(
+                Goto {
+                    dest: *dest,
+                    loop_invariants: Some(inv),
+                    loop_assigns: loop_assigns.clone()
+                },
+                *self.location()
+            )
         } else {
             unreachable!("Loop contracts should be annotated only to goto stmt")
         }
@@ -345,12 +352,18 @@ impl Stmt {
     pub fn with_loop_assigns(self, asg: Vec<Expr>) -> Self {
         if let Goto { dest, loop_invariants, loop_assigns } = self.body() {
             assert!(loop_assigns.is_none());
-            stmt!(Goto { dest: *dest, loop_invariants: loop_invariants.clone(), loop_assigns: Some(asg)}, *self.location())
+            stmt!(
+                Goto {
+                    dest: *dest,
+                    loop_invariants: loop_invariants.clone(),
+                    loop_assigns: Some(asg)
+                },
+                *self.location()
+            )
         } else {
             unreachable!("Loop assigns should be annotated only to goto stmt")
         }
     }
-        
 }
 
 /// Predicates
