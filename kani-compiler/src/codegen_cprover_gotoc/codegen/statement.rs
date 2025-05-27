@@ -248,6 +248,11 @@ impl GotocCtx<'_> {
                 self.codegen_drop(place, target, loc)
             }
             TerminatorKind::Call { func, args, destination, target, .. } => {
+                if self.codegen_var_name(&destination.local).contains("kaniiter") {
+                    let itername = self.codegen_var_name(&destination.local);
+                    let itervar = self.symbol_table.lookup(itername).unwrap();
+                    self.current_loop_assign.push(itervar.clone().to_expr().address_of());
+                }
                 self.codegen_funcall(func, args, destination, target, term.span)
             }
             TerminatorKind::Assert { cond, expected, msg, target, .. } => {

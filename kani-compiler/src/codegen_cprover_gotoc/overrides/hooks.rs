@@ -727,10 +727,16 @@ impl GotocHook for LoopInvariantRegister {
             // When loop-contracts is enabled, codegen
             // free(0)
             // goto target --- with loop contracts annotated.
-            
-            let stmt = Stmt::goto(bb_label(target.unwrap()), loc).with_loop_contracts(
-                func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)),
-            ).with_loop_assigns(assign);
+
+            let mut stmt = Stmt::goto(bb_label(target.unwrap()), loc)
+                .with_loop_contracts(func_exp.call(fargs).cast_to(Type::CInteger(CIntType::Bool)));
+            let mut assigns = gcx.current_loop_assign.clone();
+            //assigns.reverse();
+            println!("assigns: {assigns:?}");
+            if !assigns.is_empty() {
+                stmt = stmt.with_loop_assigns(assigns.clone());
+                gcx.current_loop_assign.clear();
+            }
 
             // Add `free(0)` to make sure the body of `free` won't be dropped to
             // satisfy the requirement of DFCC.
