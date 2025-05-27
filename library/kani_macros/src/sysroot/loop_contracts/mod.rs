@@ -4,12 +4,15 @@
 //! Implementation of the loop contracts code generation.
 //!
 
-use proc_macro::{TokenStream, Span};
+use proc_macro::{Span, TokenStream};
 use proc_macro_error2::abort_call_site;
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::token::AndAnd;
-use syn::{BinOp, Block, Expr, ExprBinary, Ident, Stmt, parse_quote, visit_mut::VisitMut, Pat, ExprLoop, ExprForLoop};
+use syn::{
+    BinOp, Block, Expr, ExprBinary, ExprForLoop, ExprLoop, Ident, Pat, Stmt, parse_quote,
+    visit_mut::VisitMut,
+};
 
 /*
     Transform the loop to support on_entry(expr) : the value of expr before entering the loop
@@ -230,27 +233,27 @@ pub fn transform_for_to_loop(for_loop: ExprForLoop) -> (Stmt, Option<Stmt>) {
     let expr = for_loop.expr;
     let body = for_loop.body;
     let attrs = for_loop.attrs;
-    
+
     // Create an iterator variable name
-    let itername = "__iter".to_owned();
+    let itername = "kaniiter".to_owned();
     let iter_ident = format_ident!("{}", itername);
-    
+
     // Create initialization statement for the iterator
     let init_stmt: Stmt = parse_quote! {
         let mut #iter_ident = #expr.into_iter();
     };
-    
+
     // Create the new loop body with iterator advancement
     let mut new_body_stmts = Vec::new();
-    
+
     // Add the pattern binding using next()
     let nextoptionname = "__nextoption".to_owned();
     let nextoption_ident = format_ident!("{}", nextoptionname);
-    let next_stmt: Stmt =parse_quote! {
+    let next_stmt: Stmt = parse_quote! {
         let #nextoption_ident = #iter_ident.next();
     };
 
-    let check_stmt: Stmt =parse_quote! {
+    let check_stmt: Stmt = parse_quote! {
         if #nextoption_ident.is_none() { break; };
     };
 
@@ -258,18 +261,18 @@ pub fn transform_for_to_loop(for_loop: ExprForLoop) -> (Stmt, Option<Stmt>) {
         Pat::Ident(ref patident) => patident.ident.clone(),
         _ => abort_call_site!("Unsupported pattern in for loop"),
     };
-    
-    let next_unwrap_stmt : Stmt = parse_quote! {
+
+    let next_unwrap_stmt: Stmt = parse_quote! {
         let #pat = #nextoption_ident.unwrap();
     };
 
     new_body_stmts.push(next_stmt);
     new_body_stmts.push(check_stmt);
     new_body_stmts.push(next_unwrap_stmt);
-    
+
     // Add the original loop body statements
     new_body_stmts.extend(body.stmts.iter().cloned());
-        
+
     // Create the final expression with the iterator initialization
     let loop_loop: Stmt = parse_quote! {
             loop{
@@ -279,11 +282,11 @@ pub fn transform_for_to_loop(for_loop: ExprForLoop) -> (Stmt, Option<Stmt>) {
     (loop_loop, Some(init_stmt))
 }
 
-
 pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
     // parse the stmt of the loop
     let mut loop_stmt: Stmt = syn::parse(item.clone()).unwrap();
-    let mut initstmt : Option<Stmt> = None;
+    let loop_id = generate_unique_id_from_span(&loop_stmt);
+    let mut initstmt: Option<Stmt> = None;
     if let Stmt::Expr(ref e, _) = loop_stmt {
         if let Expr::ForLoop(for_loop) = e {
             (loop_stmt, initstmt) = transform_for_to_loop(for_loop.clone());
@@ -293,7 +296,6 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
     // name of the loop invariant as closure of the form
     // __kani_loop_invariant_#startline_#startcol_#endline_#endcol
     let mut inv_name: String = "__kani_loop_invariant".to_owned();
-    let loop_id = generate_unique_id_from_span(&loop_stmt);
     inv_name.push_str(&loop_id);
 
     // expr of the loop invariant
@@ -386,7 +388,7 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
             note = "for now, loop contracts is only supported for while-loops.";
         ),
     }
-    let ret: TokenStream = if initstmt.is_none(){
+    let ret: TokenStream = if initstmt.is_none() {
         if has_prev {
             quote!(
             {
@@ -432,8 +434,7 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .into()
         }
-    } else
-    {
+    } else {
         let inititer = initstmt.unwrap();
         if has_prev {
             quote!(
@@ -481,7 +482,7 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
             .into()
         }
     };
-    println!("{}",ret.to_string());
+    println!("{}", ret.to_string());
     ret
 }
 
