@@ -226,6 +226,7 @@ fn transform_break_continue(block: &mut Block) {
     block.stmts.push(return_stmt);
 }
 
+#[allow(clippy::type_complexity)]
 pub fn transform_for_to_loop(
     for_loop: ExprForLoop,
     loop_id: &str,
