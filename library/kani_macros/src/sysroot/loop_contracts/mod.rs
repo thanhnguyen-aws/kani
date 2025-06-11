@@ -9,7 +9,9 @@ use proc_macro_error2::abort_call_site;
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::token::AndAnd;
-use syn::{BinOp, Block, Expr, ExprBinary, Ident, Stmt, parse_quote, visit_mut::VisitMut};
+use syn::{
+    BinOp, Block, Expr, ExprBinary, ExprForLoop, Ident, Stmt, parse_quote, visit_mut::VisitMut,
+};
 
 /*
     Transform the loop to support on_entry(expr) : the value of expr before entering the loop
@@ -224,14 +226,104 @@ fn transform_break_continue(block: &mut Block) {
     block.stmts.push(return_stmt);
 }
 
+pub fn transform_for_to_loop(
+    for_loop: ExprForLoop,
+    loop_id: &str,
+) -> (Stmt, Option<Stmt>, Option<Stmt>, Option<Stmt>, Option<Stmt>, Option<Stmt>) {
+    // Extract components from the for loop
+    let pat = *for_loop.pat;
+    let expr = for_loop.expr;
+    let body = for_loop.body;
+
+    // Create an iterator variable name
+    let indexname = "kaniindex".to_owned();
+    let index_ident = format_ident!("{}", indexname);
+
+    let mut itername = "kaniiter".to_owned();
+    itername.push_str(loop_id);
+    let iter_ident = format_ident!("{}", itername);
+
+    let lenname = "kaniiterlen".to_owned();
+    let len_ident = format_ident!("{}", lenname);
+
+    // Create initialization statement for the iterator
+    let init_iter_stmt: Stmt = parse_quote! {
+        let #iter_ident = kani::KaniIntoIter::kani_into_iter(#expr);
+    };
+
+    let init_index_stmt: Stmt = parse_quote! {
+        let mut #index_ident = 0;
+    };
+
+    let init_len_stmt: Stmt = parse_quote! {
+        let #len_ident = #iter_ident.len;
+    };
+
+    let init_pat_stmt: Stmt = parse_quote! {
+        let mut #pat = kani::KaniIter::first(&#iter_ident);
+    };
+
+    // Create the new loop body with iterator advancement
+    let mut new_body_stmts = Vec::new();
+
+    let alloc_assume_stmt: Stmt = parse_quote! {
+        kani::KaniIter::assumption(&#iter_ident);
+    };
+
+    // Increase the iter
+    let increase_iter_stmt: Stmt = parse_quote! {
+        #index_ident = #index_ident + 1;
+    };
+
+    let pat_assign_stmt: Stmt = parse_quote! {
+        #pat = kani::KaniIter::indexing(&#iter_ident, #index_ident);
+    };
+
+    new_body_stmts.push(alloc_assume_stmt.clone());
+    new_body_stmts.push(pat_assign_stmt);
+    new_body_stmts.push(increase_iter_stmt);
+
+    // Add the original loop body statements
+    new_body_stmts.extend(body.stmts.iter().cloned());
+
+    // Create the final expression with the iterator initialization
+    let loop_loop: Stmt = parse_quote! {
+            while (#index_ident < #iter_ident.len) {
+                #(#new_body_stmts)*
+            }
+    };
+    (
+        loop_loop,
+        Some(init_iter_stmt),
+        Some(init_len_stmt),
+        Some(init_index_stmt),
+        Some(init_pat_stmt),
+        Some(alloc_assume_stmt),
+    )
+}
+
 pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
     // parse the stmt of the loop
     let mut loop_stmt: Stmt = syn::parse(item.clone()).unwrap();
-
+    let loop_id = generate_unique_id_from_span(&loop_stmt);
+    let mut init_iter_stmt: Option<Stmt> = None;
+    let mut init_len_stmt: Option<Stmt> = None;
+    let mut init_index_stmt: Option<Stmt> = None;
+    let mut init_pat_stmt: Option<Stmt> = None;
+    let mut alloc_assume_stmt: Option<Stmt> = None;
+    if let Stmt::Expr(Expr::ForLoop(for_loop), _) = &loop_stmt {
+        (
+            loop_stmt,
+            init_iter_stmt,
+            init_len_stmt,
+            init_index_stmt,
+            init_pat_stmt,
+            alloc_assume_stmt,
+        ) = transform_for_to_loop(for_loop.clone(), &loop_id);
+    }
     // name of the loop invariant as closure of the form
     // __kani_loop_invariant_#startline_#startcol_#endline_#endcol
     let mut inv_name: String = "__kani_loop_invariant".to_owned();
-    let loop_id = generate_unique_id_from_span(&loop_stmt);
     inv_name.push_str(&loop_id);
 
     // expr of the loop invariant
@@ -324,8 +416,69 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
             note = "for now, loop contracts is only supported for while-loops.";
         ),
     }
-
-    if has_prev {
+    let ret: TokenStream = if let Some(init_iter_stmt) = init_iter_stmt {
+        let init_len_stmt = init_len_stmt.unwrap();
+        let init_index_stmt = init_index_stmt.unwrap();
+        let init_pat_stmt = init_pat_stmt.unwrap();
+        let alloc_assume_stmt = alloc_assume_stmt.unwrap();
+        if has_prev {
+            quote!(
+            {
+            #init_iter_stmt
+            #init_len_stmt
+            assert!(kaniiterlen > 0, "undefined prev when iter's length is zero");
+            #init_index_stmt
+            #alloc_assume_stmt
+            #init_pat_stmt
+            #(#onentry_decl_stms)*
+            #(#prev_decl_stms)*
+            let mut #loop_body_closure = ||
+            #loop_body;
+            let (#loop_body_closure_ret_1, #loop_body_closure_ret_2) = #loop_body_closure ();
+            if #loop_body_closure_ret_2.is_some() {
+                return #loop_body_closure_ret_2.unwrap();
+            }
+            if #loop_body_closure_ret_1 {
+            // Dummy function used to force the compiler to capture the environment.
+            // We cannot call closures inside constant functions.
+            // This function gets replaced by `kani::internal::call_closure`.
+                #[inline(never)]
+                #[kanitool::fn_marker = "kani_register_loop_contract"]
+                const fn #register_ident<F: Fn() -> bool>(_f: &F, _transformed: usize) -> bool {
+                    true
+                }
+                #loop_stmt
+            }
+            else {
+                assert!(#inv_expr);
+            };
+            })
+            .into()
+        } else {
+            quote!(
+            {
+            #init_iter_stmt
+            #init_len_stmt
+            if kaniiterlen > 0
+            {
+            #init_index_stmt
+            #alloc_assume_stmt
+            #init_pat_stmt
+            #(#onentry_decl_stms)*
+            // Dummy function used to force the compiler to capture the environment.
+            // We cannot call closures inside constant functions.
+            // This function gets replaced by `kani::internal::call_closure`.
+            #[inline(never)]
+            #[kanitool::fn_marker = "kani_register_loop_contract"]
+            const fn #register_ident<F: Fn() -> bool>(_f: &F, _transformed: usize) -> bool {
+                true
+            }
+            #loop_stmt
+            }
+            })
+            .into()
+        }
+    } else if has_prev {
         quote!(
         {
         if (#loop_guard) {
@@ -369,7 +522,8 @@ pub fn loop_invariant(attr: TokenStream, item: TokenStream) -> TokenStream {
         #loop_stmt
         })
         .into()
-    }
+    };
+    ret
 }
 
 fn generate_unique_id_from_span(stmt: &Stmt) -> String {
