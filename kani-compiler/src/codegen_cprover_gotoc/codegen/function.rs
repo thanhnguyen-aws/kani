@@ -38,12 +38,15 @@ impl GotocCtx<'_> {
             // Except that ZST fields are not included as parameters.
             let sym = Symbol::variable(
                 name.clone(),
-                base_name,
+                base_name.clone(),
                 var_type,
                 self.codegen_span_stable(ldata.span),
             )
             .with_is_hidden(!self.is_user_variable(&lc))
             .with_is_parameter((lc > 0 && lc <= num_args) && !self.is_zst_stable(ldata.ty));
+            if (base_name.clone() == "itt") || (base_name.clone() == "jtt")  {
+                self.current_loop_assign.push(sym.clone().to_expr().address_of());
+            }
             let sym_e = sym.to_expr();
             self.symbol_table.insert(sym);
 
